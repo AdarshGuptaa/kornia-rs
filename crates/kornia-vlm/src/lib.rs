@@ -1,7 +1,13 @@
 pub mod paligemma;
+
+#[cfg(feature = "candle-backend")]
 pub mod smolvlm;
+
+#[cfg(feature = "candle-backend")]
 pub mod smolvlm2;
 
 pub mod video;
 
-mod context;
+pub mod context;
+
+pub mod backend;
