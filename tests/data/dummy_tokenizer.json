@@ -1,0 +1,32 @@
+{
+      "version": "1.0",
+      "truncation": null,
+      "padding": null,
+      "added_tokens": [
+        {
+          "id": 3,
+          "content": "<image>",
+          "single_word": false,
+          "lstrip": false,
+          "rstrip": false,
+          "normalized": false,
+          "special": true
+        }
+      ],
+      "normalizer": null,
+      "pre_tokenizer": {
+        "type": "Whitespace"
+      },
+      "post_processor": null,
+      "decoder": null,
+      "model": {
+        "type": "WordLevel",
+        "unk_token": "<unk>",
+        "vocab": {
+          "<unk>": 0,
+          "<image>": 3,
+          "hello": 4,
+          "world": 5
+        }
+      }
+    }

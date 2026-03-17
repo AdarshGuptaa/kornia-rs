@@ -28,9 +28,9 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokenizers = { workspace = true, optional = true }
-ort = { version = "2.0.0-rc.9", optional = true, features = ["ndarray", "half"] }
-ndarray = { version = "0.15.6", optional = true }
-half = { version = "2.3.1", optional = true }
+ort = { version = "2.0.0-rc.11", optional = true, features = ["ndarray", "half"] }
+ndarray = { version = "0.17.2", optional = true }
+half = { version = "2.1", optional = true }
 
 [dev-dependencies]
 env_logger = { workspace = true }
