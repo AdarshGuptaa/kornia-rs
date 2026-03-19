@@ -3,18 +3,20 @@ This repository contains the Proof of Concept (PoC) for integrating an ONNX runt
 It provides a thread-safe and WIP ONNX Runtime backend designed to eventually ingest real-time video frames from the Bubbaloop application.
 
 ##  What Has Been Created
-A complete, end-to-end inference pipeline for VLMs (like PaliGemma and Qwen) using `ort v2.0.0-rc11`.
-Pipeline works as follows:
-1. Onnx Context (High Level API) new instance created
-2. OnnxEngine is initiated
-3. Vision and Text Model are loaded in the form of sessions in the engine
-4. Tokenizer is loaded into engine environment
-5. Image and Prompt are loaded through context::process_frame()
-6. Image is processed to the format acceptable to Paligemma Model
-7. Processed image is run on vision.rs to produce image_features
-8. text.rs takes image_features and text prompt to produce text tokens and run the autoregressive loop to produce final string output
+**The Pipeline:**
+1. Initialize a 3-engine `OrtContext` (Vision, Embedding, Language)
+2. Ingest raw images and text prompts via `process_frame()`
+3. Preprocess images into natively aligned `ndarray` formats
+4. Execute the Vision session to extract spatial `image_features`
+5. Execute the Embedding session to project text into vectors
+6. Stitch the tensors into a unified `inputs_embeds` sequence
+7. Execute the autoregressive decoding loop to stream generated text
 
 **Key Achievements:**
+* `Candle` Implementation has been seperated using `[cfg]` feature flag: Safely preserving the candle implementations
+* The Ort backend and Context have been built with reuse in mind: Future VLM implementations can always use the same backend and features.
+* 3-Engine Architecture: Decoupled the embedding layer to natively support web-optimized `onnx-community` merged decoders.
+* Dynamic Precision: Engineered `f32` and `f16` support via a custom `ModelFloat` trait. This slashes memory consumption in half, enabling inference on consumer GPUs.
 * Thread-Safe Context Manager: Implemented `OrtContext`, a struct that safely manages ONNX sessions on concurrent threads.
 * Autoregressive Loop: Built a greedy-search generation loop that feeds predicted token IDs back into the language decoder while 
   maintaining a static view of the image features. (Unoptimized)
@@ -26,28 +28,65 @@ The backend is built on the `Arc<OnnxEngine>` pattern:
 3. Zero-Copy Views: During the 50-step token generation loop, the system passes borrowed views (`.view()`) of the image features rather than cloning the massive vision tensor on every iteration.
 
 ## Proof of Concept:
-Run the following:
-- `src/backend/onnx.rs` tests
-- `src/context/onnx_ctx.rs` tests (Complete high Level Test)
-- `src/paligemma/text.rs|vision.rs|preprocessor.rs` tests
+Image:
+![umbrella](https://github.com/user-attachments/assets/7c292846-beb9-4b59-a061-dfcf6115060e)
 
-This prototype relies on decoupled, randomly initialized dummy ONNX models.
-Both models use **FP16 (Float16)** precision to be in check with the edge inference standards (For Jetson)
+Prompt: **caption en**
 
-**Vision Model**: SigLIP mock
-* Input (`pixel_values`):** `[batch_size, 3, 224, 224]` (FP16).
-* Output (`image_features`):** `[batch_size, 256, 2048]` (FP16).
+Code:
+```
+use std::path::PathBuf;
+use kornia_vlm::backend::onnx::{Device, OnnxEngine};
+use kornia_io::functional as F;
+use kornia_vlm::context::ort_ctx::{ModelFamily, OrtContext};
+use kornia_image::{Image, ImageSize, allocator::CpuAllocator};
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let image_path = "/home/adarsh_gupta/Pictures/umbrella.jpeg";
+    let model_base = PathBuf::from("/home/adarsh_gupta/Projects/paligemma_models/");
+    let vision_path = model_base.join("vision_encoder_quantized.onnx");
+    let lang_path = model_base.join("decoder_model_merged_quantized.onnx");
+    let tokenizer_path = model_base.join("/home/adarsh_gupta/Projects/paligemma_models/tokenizer.json");
+    let embedds_path = model_base.join("/home/adarsh_gupta/Projects/paligemma_models/embed_tokens_quantized.onnx");
+    OnnxEngine::<()>::init_env()
+    .map_err(|e| format!("Environment initialization failed: {}", e))?;
+    let image = F::read_image_any_rgb8(image_path)
+    .map_err(|e| format!("Failed to read image: {:?}", e))?;
+    let context = OrtContext::<f32>::new(
+        vision_path,
+        embedds_path,
+        lang_path,
+        tokenizer_path,
+        ModelFamily::Paligemma,
+    )?;
+    let prompt = "caption en";
+    println!("Generating caption...");
+    match context.process_frame(&image, prompt) {
+        Ok(caption) => {
+            println!("------------------------------------");
+            println!("Model Output: {}", caption);
+            println!("------------------------------------");
+        }
+        Err(e) => eprintln!("Inference Error: {}", e),
+    }
+    Ok(())
+}
+```
+Output:
 
-**Language Model**: Gemma mock
-* Inputs:  `inputs_embeds`: `[batch_size, seq_len, 2048]` (FP16).
-          `attention_mask`: `[batch_size, seq_len]` (INT64).
-* Output (`logits`): `[batch_size, seq_len, 257152]` (FP16).
+<img width="606" height="347" alt="Screenshot_20260319_150313" src="https://github.com/user-attachments/assets/a3adb9f6-45b6-41a8-8303-5c3e0fc3768e" />
 
+This prototype relies on f32 i64 quantized encoder, decoder, tokenizer and token embedder from https://huggingface.co/onnx-community/paligemma2-3b-pt-224/tree/main
+
+**Decoder**: decoder_model_merged_quantized.onnx + decoder_model_merged_quantized.onnx_data
+**Encoder**: encoder_model_merged_quantized.onnx
+**Tokenizer**: tokenizer.json + tokenizer_config.json
+**Token Embeds**: embed_tokens_quantized.onnx
 
 ## TODOs & Next Steps
 The following steps are required to transition this prototype into a production-ready feature for Bubbaloop:
+- [ ] Generalize the implementation for all paligemma models by handling their specific `config.json` files for multimodel robustness.
 - [ ] Bubbaloop Integration: Connect the `OrtContext::process_frame` function into the `main.rs` Bubbaloop camera ingestion loop.
-- [ ] Real Model Weights: Swap the randomly initialized dummy ONNX models for actual, quantized exported weights (e.g., Qwen2.5-VL or PaliGemma).
+- [x] Real Model Weights: Swap the randomly initialized dummy ONNX models for actual, quantized exported weights (e.g., Qwen2.5-VL or PaliGemma).
 - [ ] Execution Providers: Explicitly configure `ort` to utilize hardware acceleration (TensorRT / CUDA) during session initialization for real-time FPS.
 - [ ] KV Caching: Implement Key-Value caching in the autoregressive loop to prevent recalculating past tokens, drastically speeding up text generation.
 - [ ] Dynamic Resizing: Ensure the preprocessor can handle arbitrary, non-square webcam resolutions and convert to model multimodel specific formats.
