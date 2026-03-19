@@ -12,3 +12,5 @@ pub mod video;
 pub mod context;
 
 pub mod backend;
+
+pub mod types;

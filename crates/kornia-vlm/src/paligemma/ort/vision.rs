@@ -1,13 +1,18 @@
 use ndarray::Array4;
 use half::f16;
 use crate::backend::onnx::OnnxEngine;
+use crate::types::ModelFloat;
+use ort::tensor::PrimitiveTensorElementType;
+use std::fmt::Debug;
 
 // Run the onnx engine on a image's pixel values tensor to give tensor result
-pub fn execute_vision(
-    engine: &mut OnnxEngine,
-    pixel_values: Array4<f16>,
-) -> Result<ndarray::ArrayD<f16>, String> {
-    
+pub fn execute_vision<T>(
+    engine: &mut OnnxEngine<T>,
+    pixel_values: Array4<T>,
+) -> Result<ndarray::ArrayD<T>, String>
+where
+    T: ModelFloat + PrimitiveTensorElementType + Debug,
+{
     // convert input to ort value tensor for onnx engine to interpret
     let ort_input = ort::value::Tensor::from_array(pixel_values)
         .map_err(|e| e.to_string())?;
@@ -19,7 +24,7 @@ pub fn execute_vision(
     
     // extract output to vec
     let extracted = outputs["image_features"] 
-        .try_extract_tensor::<f16>()
+        .try_extract_tensor::<T>()
         .map_err(|e| e.to_string())?;
 
     let shape_usize: Vec<usize> = extracted.0
@@ -46,7 +51,7 @@ mod tests {
 
     #[test]
     fn test_execute_vision_success() {
-        let _ = OnnxEngine::init_env();
+        let _ = OnnxEngine::<()>::init_env();
 
         let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         path.pop(); 
@@ -55,12 +60,12 @@ mod tests {
         path.push("data");
         path.push("vision_model.onnx");
 
-        let mut engine = OnnxEngine::load(path, Device::Cpu)
+        let mut engine = OnnxEngine::<f16>::load(path, Device::Cpu)
             .expect("Failed to load dummy vision model");
 
         let pixel_values = Array4::<f16>::from_elem((1, 3, 224, 224), f16::from_f32(0.0));
 
-        let result = execute_vision(&mut engine, pixel_values);
+        let result = execute_vision::<f16>(&mut engine, pixel_values);
 
         assert!(
             result.is_ok(),

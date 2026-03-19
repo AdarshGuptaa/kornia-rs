@@ -5,19 +5,20 @@ use ort::{
     memory::Allocator, 
 };
 use std::path::Path;
+use crate::types::ModelFloat;
 
 pub enum Device {
     Cpu,
     Cuda { device_id: i32 },
 }
 
-pub struct OnnxEngine {
+pub struct OnnxEngine<T>{
     pub session: Session,
     pub input_names: Vec<String>,
+    pub _marker : std::marker::PhantomData<T>,  // Tie the whole engine to a type f32/f16
 }
 
-// TODO: Handle multiple OnnxEngine sessions concurrently
-impl OnnxEngine {
+impl OnnxEngine<()> {
     // initialises the Engine and its underlying C++ implementation
     pub fn init_env() -> ort::Result<()> {
         let _ = ort::init()
@@ -25,7 +26,10 @@ impl OnnxEngine {
             .commit(); 
         Ok(())
     }
+}
 
+// TODO: Handle multiple OnnxEngine sessions concurrently
+impl<T: ModelFloat> OnnxEngine<T> {
     // Loads a model as a session into the memory of the selected device
     pub fn load<P: AsRef<Path>>(model_path: P, device: Device) -> ort::Result<Self> {
         let mut builder = Session::builder()?
@@ -53,7 +57,7 @@ impl OnnxEngine {
             .map(|input| input.name().to_string())
             .collect();
 
-        Ok(Self { session, input_names})
+        Ok(Self { session, input_names, _marker: std::marker::PhantomData})
     }
 
     // exposes the allocator for rust references -> c++ values
@@ -73,7 +77,7 @@ mod tests {
     #[test]
 fn test_engine_lifecycle_and_inference() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize the global environment
-    OnnxEngine::init_env().map_err(|e| format!("Env Init Failed: {}", e))?;
+    OnnxEngine::<()>::init_env().map_err(|e| format!("Env Init Failed: {}", e))?;
 
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     path.pop();
@@ -84,8 +88,8 @@ fn test_engine_lifecycle_and_inference() -> Result<(), Box<dyn std::error::Error
 
     assert!(path.exists(), "Still not found at {:?}", path);
 
-    // load the onnx engine
-    let mut engine = OnnxEngine::load(path, Device::Cpu)?;
+    // load the f16 dummy mode
+    let mut engine = OnnxEngine::<f16>::load(path, Device::Cpu)?;
     
     let dummy_input = ndarray::Array4::<f16>::zeros((1, 3, 224, 224));
     

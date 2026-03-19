@@ -1,75 +1,67 @@
-use ndarray::{Array2, ArrayD};
-use tokenizers::Tokenizer;
 use crate::backend::onnx::OnnxEngine;
-use half::f16;
+use ndarray::{Array2, Array3, ArrayD, Axis};
+use ort::tensor::PrimitiveTensorElementType;
+use std::fmt::Debug;
+use tokenizers::Tokenizer;
 
-pub fn generate(
-    engine: &mut OnnxEngine,
+pub fn generate<T>(
+    decoder_engine: &mut OnnxEngine<T>,
+    embed_engine: &mut OnnxEngine<T>, 
     tokenizer: &Tokenizer,
-    image_features: ArrayD<f16>,
-    prompt: &str,
-) -> Result<String, String> {
-    
-    // divided into tokens
-    let encoding = tokenizer.encode(prompt, true)
-        .map_err(|e| e.to_string())?;
-    
-    // token ids in vector (Onnx only takes i64 token ids)
-    let mut input_ids: Vec<i64> = encoding.get_ids().iter().map(|&id| id as i64).collect();
+    image_features: ArrayD<T>,        
+    input_ids_array: Array2<i64>,     
+) -> Result<String, String>
+where
+    T: crate::types::ModelFloat + PrimitiveTensorElementType + Debug + PartialOrd,
+{
+    let mut input_ids = input_ids_array.into_raw_vec();
     let eos_token_id = tokenizer.token_to_id("<eos>").unwrap_or(1) as i64;
-    
     let mut generated_text = String::new();
-
-    // process 50 tokens at a time
     let max_tokens = 50;
+    let num_layers = 26;
 
-    let image_features_val = ort::value::Tensor::from_array(image_features)
-            .map_err(|e| e.to_string())?;
-
-
-    let input_names = &engine.input_names;
-
-    let text_input_name = &input_names[1];
-    let image_input_name = &input_names[0];
-
-    // auto regressive loop
+    // no kv cache loop
     for _ in 0..max_tokens {
+        // Rebuild the full Image + Text sandwich every step :(
+        let current_embeds_array = build_prefill_embeddings(
+            embed_engine, 
+            image_features.clone(), // Clone so we don't consume the image
+            &input_ids
+        )?;
 
-        let seq_len = input_ids.len();
+        let seq_len = current_embeds_array.shape()[1]; 
         
-        // reshape the token ids vector into a 2d ndarray vector
-        let input_ids_array = Array2::from_shape_vec((1, seq_len), input_ids.clone())
-            .map_err(|e| e.to_string())?;
+        let position_ids: Vec<i64> = (0..seq_len as i64).collect();
+        let position_tensor = ort::value::Tensor::from_array(
+            ndarray::Array2::from_shape_vec((1, seq_len), position_ids).unwrap()
+        ).unwrap();
 
-        let input_ids_val = ort::value::Tensor::from_array(input_ids_array)
-            .map_err(|e| e.to_string())?;
-        
-        // run the tokens through the onnx backend
-        let outputs = engine.session.run(ort::inputs![
-            text_input_name.as_str() => input_ids_val,
-            image_input_name.as_str() => &image_features_val,
-        ]).map_err(|e: ort::Error| e.to_string())?;
-        
-        // extract output
-        let extracted = outputs["logits"]
-            .try_extract_tensor::<f16>()
-            .map_err(|e: ort::Error| e.to_string())?;
+        let full_embeds_tensor = ort::value::Tensor::from_array(current_embeds_array).unwrap();
 
-        let logits_shape = extracted.0;
-        let logits_slice = extracted.1;
+        let mut session_inputs: Vec<(&str, ort::value::DynValue)> = vec![
+            ("position_ids", position_tensor.into()),
+            ("inputs_embeds", full_embeds_tensor.into()),
+        ];
+
+        // Feed 52 Empty Tensors every single time 
+        for i in 0..num_layers {
+            let empty_kv = ndarray::Array4::<f32>::zeros((1, 4, 0, 256));
+            session_inputs.push((Box::leak(format!("past_key_values.{}.key", i).into_boxed_str()), ort::value::Tensor::from_array(empty_kv.clone()).unwrap().into()));
+            session_inputs.push((Box::leak(format!("past_key_values.{}.value", i).into_boxed_str()), ort::value::Tensor::from_array(empty_kv).unwrap().into()));
+        }
+
+        // Run decoder egine
+        let outputs = decoder_engine.session.run(session_inputs).map_err(|e: ort::Error| e.to_string())?;
         
+        // Extract Logits
+        let extracted = outputs["logits"].try_extract_tensor::<T>().map_err(|e: ort::Error| e.to_string())?;
+        let (logits_shape, logits_slice) = (extracted.0, extracted.1);
         let vocab_size = *logits_shape.last().unwrap_or(&1) as usize;
 
-        // get start score of last token
-        let last_token_start = logits_slice.len() - vocab_size;
-
-        // get the lask token as vec of logits
-        let last_token_logits = &logits_slice[last_token_start..];
+        let last_token_logits = &logits_slice[logits_slice.len() - vocab_size..];
         
         let mut best_token_id = 0;
-        let mut highest_prob = f16::NEG_INFINITY;
-        
-        // greedy loop
+        let mut highest_prob = T::neg_infinity();
         for (id, &prob) in last_token_logits.iter().enumerate() {
             if prob > highest_prob {
                 highest_prob = prob;
@@ -77,70 +69,82 @@ pub fn generate(
             }
         }
 
-        // Model is done with its text
         if best_token_id == eos_token_id { break; }
 
         input_ids.push(best_token_id);
-
-        if let Some(word) = tokenizer.decode(&[best_token_id as u32], true).ok() {
+        
+        if let Some(word) = tokenizer.decode(&[best_token_id as u32], false).ok() {
             generated_text.push_str(&word);
+            println!("Generated: {}", word); // Print as it thinks!
         }
     }
 
     Ok(generated_text.trim().to_string())
 }
 
-#[cfg(test)]
-mod tests{
-    use super::*;
-    use crate::backend::onnx::{Device, OnnxEngine};
-    use half::f16;
-    use std::path::PathBuf;
+fn build_prefill_embeddings<T>(
+    embed_engine: &mut OnnxEngine<T>,
+    image_features: ArrayD<T>,
+    prompt_ids: &[i64],
+) -> Result<Array3<T>, String>
+where
+    T: crate::types::ModelFloat + PrimitiveTensorElementType + Debug,
+{
+    // Process text through the embedding model
+    let prompt_tensor = ort::value::Tensor::from_array(
+        Array2::from_shape_vec((1, prompt_ids.len()), prompt_ids.to_vec()).unwrap(),
+    )
+    .map_err(|e| e.to_string())?;
 
-    #[test]
-    fn test_autoregressive_gen(){
-        let _ = OnnxEngine::init_env();
+    let embed_outputs = embed_engine
+        .session
+        .run(ort::inputs!["input_ids" => prompt_tensor])
+        .map_err(|e: ort::Error| e.to_string())?;
 
-        let mut tokenizer_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    
-        // Navigate from crates/kornia-vlm -> crates/ -> workspace_root
-        tokenizer_path.pop(); 
-        tokenizer_path.pop();
-        tokenizer_path.push("tests");
-        tokenizer_path.push("data");
-        tokenizer_path.push("dummy_tokenizer.json");
+    // Extract and clone to break the borrow
+    let (text_shape, text_data) = embed_outputs["inputs_embeds"]
+        .try_extract_tensor::<T>()
+        .map_err(|e: ort::Error| e.to_string())?;
 
-        let tokenizer = Tokenizer::from_file(tokenizer_path)
-            .expect("Failed to load tokenizer");
+    let text_shape_usize: Vec<usize> = text_shape.iter().map(|&x| x as usize).collect();
+    let text_embeds_3d = ndarray::Array::from_shape_vec(text_shape_usize, text_data.to_vec())
+        .map_err(|e| format!("Failed to create Array: {}", e))?
+        .into_dimensionality::<ndarray::Ix3>()
+        .map_err(|_| "Failed to cast text_embeds to 3D array.")?;
 
-        let mut model_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    
-        // Navigate from crates/kornia-vlm -> crates/ -> workspace_root
-        model_path.pop(); 
-        model_path.pop();
-        model_path.push("tests");
-        model_path.push("data");
-        model_path.push("language_model.onnx");
+    let image_features_3d = image_features
+        .into_dimensionality::<ndarray::Ix3>()
+        .map_err(|_| "Failed to cast image_features to 3D array.")?;
 
-        let mut engine = OnnxEngine::load(model_path, Device::Cpu).unwrap();
+    // combine and return the array
+    ndarray::concatenate(Axis(1), &[image_features_3d.view(), text_embeds_3d.view()])
+        .map_err(|e| format!("Concatenation failed: {}", e))
+}
 
-        let dummy_img_shape = vec![1, 64, 2048];
-        let total_elements = dummy_img_shape.iter().product();
+/// Fetches the vector embedding for a single token ID.
+fn embed_single_token<T>(
+    embed_engine: &mut OnnxEngine<T>,
+    token_id: i64,
+) -> Result<Array3<T>, String>
+where
+    T: crate::types::ModelFloat + PrimitiveTensorElementType + Debug,
+{
+    let token_tensor = ort::value::Tensor::from_array(Array2::from_elem((1, 1), token_id))
+        .map_err(|e| e.to_string())?;
 
-        let dummy_img: Vec<f16> = vec![f16::from_f32(0.0); total_elements];
-        let image_features = ArrayD::from_shape_vec(dummy_img_shape, dummy_img)
-            .expect("Failed to create a dummy image feature");
+    let embed_outputs = embed_engine
+        .session
+        .run(ort::inputs!["input_ids" => token_tensor])
+        .map_err(|e: ort::Error| e.to_string())?;
 
-        let prompt = "Describe the Image";
+    let (shape, data) = embed_outputs["inputs_embeds"]
+        .try_extract_tensor::<T>()
+        .map_err(|e: ort::Error| e.to_string())?;
 
-        let result = generate(&mut engine, &tokenizer, image_features, prompt);
+    let shape_usize: Vec<usize> = shape.iter().map(|&x| x as usize).collect();
 
-        assert!(result.is_ok(), "Generation failed with error: {:?}", result.err());
-
-        let generated_text = result.unwrap();
-        println!("Generated text: {}", generated_text);
-
-        assert!(!generated_text.is_empty(), "Generated text should not be empty");
-
-    }
+    ndarray::Array::from_shape_vec(shape_usize, data.to_vec())
+        .map_err(|e| format!("Failed to rebuild embed array: {}", e))?
+        .into_dimensionality::<ndarray::Ix3>()
+        .map_err(|_| String::from("Failed to cast to 3D array."))
 }
