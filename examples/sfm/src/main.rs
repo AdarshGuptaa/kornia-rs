@@ -184,11 +184,12 @@ fn validate_intrinsics(fx: f64, fy: f64, cx: f64, cy: f64) -> Result<(), String>
 
 /// Reject matcher parameters that argh accepts but that yield empty or broken
 /// matches: a non-positive or non-finite ratio, a non-positive or non-finite
-/// epipolar threshold, and a zero ORB feature budget (`0` means "unlimited"
-/// only for SIFT).
+/// epipolar threshold, an inlier floor below the seven-point minimal sample,
+/// and a zero ORB feature budget (`0` means "unlimited" only for SIFT).
 fn validate_matcher_args(
     ratio: f32,
     geo_threshold: f64,
+    geo_min_inliers: usize,
     n_features: usize,
     detector: features::DetectorKind,
 ) -> Result<(), String> {
@@ -198,6 +199,12 @@ fn validate_matcher_args(
     if !geo_threshold.is_finite() || geo_threshold <= 0.0 {
         return Err(format!(
             "--geo-threshold must be finite and > 0, got {geo_threshold}"
+        ));
+    }
+    if geo_min_inliers < matching::MIN_GEO_INLIERS_FLOOR {
+        return Err(format!(
+            "--geo-min-inliers must be >= {} (the seven-point minimal sample), got {geo_min_inliers}",
+            matching::MIN_GEO_INLIERS_FLOOR
         ));
     }
     if n_features == 0 && detector == features::DetectorKind::Orb {
@@ -246,6 +253,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     validate_matcher_args(
         args.ratio,
         args.geo_threshold,
+        args.geo_min_inliers,
         args.n_features,
         args.detector,
     )
@@ -550,30 +558,38 @@ mod tests {
     #[test]
     fn validate_matcher_args_rejects_invalid() {
         use features::DetectorKind::{Orb, Sift};
-        assert!(validate_matcher_args(0.8, 3.0, 500, Orb).is_ok());
+        assert!(validate_matcher_args(0.8, 3.0, 15, 500, Orb).is_ok());
         assert!(
-            validate_matcher_args(0.8, 3.0, 0, Sift).is_ok(),
+            validate_matcher_args(0.8, 3.0, 15, 0, Sift).is_ok(),
             "0 means unlimited for SIFT"
         );
         assert!(
-            validate_matcher_args(0.0, 3.0, 500, Orb).is_err(),
+            validate_matcher_args(0.0, 3.0, 15, 500, Orb).is_err(),
             "--ratio 0"
         );
         assert!(
-            validate_matcher_args(f32::NAN, 3.0, 500, Orb).is_err(),
+            validate_matcher_args(f32::NAN, 3.0, 15, 500, Orb).is_err(),
             "--ratio NaN"
         );
         assert!(
-            validate_matcher_args(0.8, 0.0, 500, Orb).is_err(),
+            validate_matcher_args(0.8, 0.0, 15, 500, Orb).is_err(),
             "--geo-threshold 0"
         );
         assert!(
-            validate_matcher_args(0.8, f64::NAN, 500, Orb).is_err(),
+            validate_matcher_args(0.8, f64::NAN, 15, 500, Orb).is_err(),
             "--geo-threshold NaN"
         );
         assert!(
-            validate_matcher_args(0.8, 3.0, 0, Orb).is_err(),
+            validate_matcher_args(0.8, 3.0, 15, 0, Orb).is_err(),
             "ORB with a zero budget"
+        );
+        assert!(
+            validate_matcher_args(0.8, 3.0, 6, 500, Orb).is_err(),
+            "--geo-min-inliers below the seven-point floor"
+        );
+        assert!(
+            validate_matcher_args(0.8, 3.0, 7, 500, Orb).is_ok(),
+            "the seven-point floor itself is accepted"
         );
     }
 

@@ -84,14 +84,14 @@ a hard requirement of the track builder — `kornia_calib::build_tracks` assumes
 one-to-one pair matches and discards any track that reaches one camera at two
 different pixels. A forward-only matcher can emit many-to-one matches (two
 keypoints of one camera sharing a neighbour), which silently culls whole
-multi-view tracks; the ORB path regressed to that in `98ecd0b` and was reverted
-to a cross-checked matcher here.
+multi-view tracks; the ORB path once regressed to that and was reverted to a
+cross-checked matcher here.
 
 Planned upgrades (each belongs in a core crate, not this example):
 
 | Idea | Where | Why |
 |---|---|---|
-| Orientation-histogram filtering on top of mutual NN | `kornia-imgproc` (`OrbMatchConfig`) | `98ecd0b`'s rotation-consistency check is useful but was shipped without cross-check; combine both. |
+| Orientation-histogram filtering on top of mutual NN | `kornia-imgproc` (`OrbMatchConfig`) | The rotation-consistency check is useful but was shipped without cross-check; combine both. |
 | Per-target injective matching | `kornia-imgproc` | Weaker than mutual NN: kills the shared-neighbour fan-in while keeping strictly more matches. |
 | Cross-octave ORB keypoint de-duplication | `kornia-imgproc` (ORB extractor) | ORB emits near-duplicate keypoints 1–3 px apart across scales; removing them attacks the fan-in at its source. |
 | `build_tracks` conflict recovery (split instead of drop) | `kornia-calib` | Recover the consistent sub-track instead of discarding the whole component. |

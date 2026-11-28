@@ -25,6 +25,10 @@ use crate::features::{CudaMatcher, FrameFeatures};
 /// without discarding genuine pairs.
 pub const MIN_SAFE_GEO_INLIERS: usize = 15;
 
+/// Smallest meaningful `--geo-min-inliers`: a seven-point fundamental hypothesis
+/// trivially explains its own minimal sample.
+pub const MIN_GEO_INLIERS_FLOOR: usize = 7;
+
 /// Returns a warning when the requested `--geo-min-inliers` is below the safe
 /// floor, else `None`.
 ///
@@ -224,7 +228,7 @@ pub fn verify_matches_geometrically(
         pairs.entry((e.cam_a, e.cam_b)).or_default().push(i);
     }
 
-    let min_inliers = min_inliers.max(7);
+    let min_inliers = min_inliers.max(MIN_GEO_INLIERS_FLOOR);
     let mut keep = vec![false; edges.len()];
     for indices in pairs.into_values() {
         if indices.len() < min_inliers {
