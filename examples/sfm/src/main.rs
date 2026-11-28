@@ -25,7 +25,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use argh::FromArgs;
-use kornia_calib::build_tracks;
+use kornia_calib::{build_tracks, ReconstructionConfig};
 
 #[derive(FromArgs)]
 /// Structure-from-Motion from a video file to a point-cloud PLY.
@@ -111,7 +111,8 @@ struct Args {
     geo_threshold: f64,
 
     /// min inliers for a pair's fundamental matrix to be trusted (default: 15;
-    /// values below 15 warn — a seven-point model validates its own minimal sample)
+    /// below 15 warns, below 7 is rejected — a seven-point model validates its
+    /// own minimal sample)
     #[argh(option, default = "15")]
     geo_min_inliers: usize,
 
@@ -441,15 +442,14 @@ fn main() -> Result<(), Box<dyn Error>> {
             progress_start.elapsed().as_secs_f64()
         );
     });
-    let overrides = reconstruction::ReconstructionOverrides {
-        max_iterations: Some(args.max_ba_iterations),
-        min_registration_inliers: Some(args.min_registration_inliers),
-        motion_prior_sigma: Some(args.motion_prior_sigma),
-        up_prior_sigma: Some(args.up_prior_sigma),
-        max_reprojection_error: Some(args.max_reprojection_error),
-        sprt,
-        refine_intrinsics: args.refine_intrinsics.then_some(true),
-    };
+    let mut config = ReconstructionConfig::new(0.0).sequential();
+    config.max_iterations = args.max_ba_iterations;
+    config.min_registration_inliers = args.min_registration_inliers;
+    config.motion_prior_sigma = args.motion_prior_sigma;
+    config.up_prior_sigma = args.up_prior_sigma;
+    config.max_reprojection_error = args.max_reprojection_error;
+    config.sprt = sprt;
+    config.refine_intrinsics = args.refine_intrinsics;
     let reconstruction = reconstruction::run_sfm(
         &tracks,
         args.fx,
@@ -458,7 +458,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         args.cy,
         n_frames,
         Some(progress),
-        overrides,
+        config,
     )?;
     let registered = reconstruction.views.iter().filter(|v| v.is_some()).count();
     eprintln!(

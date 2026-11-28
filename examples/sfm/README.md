@@ -56,7 +56,7 @@ cargo run -p sfm -- sample.mp4 out.ply \
 | `--max-reprojection-error` | `0.01` | Reprojection-error threshold (normalized units). |
 | `--geo-verify` | off | Verify matches with epipolar RANSAC after matching (rejects false matches). |
 | `--geo-threshold` | `3.0` | Epipolar RANSAC inlier threshold (pixels). |
-| `--geo-min-inliers` | `15` | Min inliers for a pair's fundamental matrix to be trusted. Values below 15 warn — at 7 the seven-point algorithm's minimal sample validates itself. |
+| `--geo-min-inliers` | `15` | Min inliers for a pair's fundamental matrix to be trusted. Below 15 warns; below 7 is rejected (the seven-point minimal sample validates itself). |
 | `--cuda` | off | Use CUDA for SIFT extraction (requires an NVIDIA GPU and a `--features cuda` build). |
 | `--sprt` | off | Enable Wald's SPRT for PnP registration (rejects bad candidate poses early). |
 | `--sprt-epsilon` | `0.5` | SPRT expected inlier ratio (capped at 0.3 until a consensus exists). |

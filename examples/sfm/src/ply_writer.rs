@@ -486,7 +486,7 @@ mod tests {
             test_util::CY,
             test_util::N_FRAMES,
             None,
-            crate::reconstruction::ReconstructionOverrides::default(),
+            kornia_calib::ReconstructionConfig::new(0.0).sequential(),
         )
         .expect("synthetic scene must reconstruct");
 

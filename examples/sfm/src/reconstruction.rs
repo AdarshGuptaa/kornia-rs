@@ -9,34 +9,7 @@ use std::error::Error;
 use std::sync::Arc;
 
 use kornia_3d::camera::PinholeCamera;
-use kornia_3d::ransac::SPRTConfig;
 use kornia_calib::{reconstruct, FeatureTrack, Reconstruction, ReconstructionConfig};
-
-/// Tunable overrides for [`ReconstructionConfig`].
-///
-/// All fields are optional; `None` keeps the default set by
-/// [`ReconstructionConfig::new(0.0).sequential()`]. This lets the CLI expose
-/// only the knobs users care about while tests and other callers stay on the
-/// defaults.
-#[derive(Debug, Clone, Default)]
-pub struct ReconstructionOverrides {
-    /// Maximum bundle-adjustment LM iterations.
-    pub max_iterations: Option<usize>,
-    /// Minimum PnP inliers required to register a view.
-    pub min_registration_inliers: Option<usize>,
-    /// Constant-velocity motion-prior sigma (`0.0` disables).
-    pub motion_prior_sigma: Option<f64>,
-    /// Camera-up prior sigma (`0.0` disables).
-    pub up_prior_sigma: Option<f64>,
-    /// Maximum reprojection error (normalized units) for triangulation.
-    pub max_reprojection_error: Option<f64>,
-    /// Enable Wald's SPRT for the per-view PnP-RANSAC registration, with the
-    /// given expected-inlier ratio and Type-I error. `None` keeps it disabled.
-    pub sprt: Option<SPRTConfig>,
-    /// Fit a global focal scale plus radial/tangential distortion against the
-    /// reconstruction (COLMAP-style alternating intrinsics refinement).
-    pub refine_intrinsics: Option<bool>,
-}
 
 /// Build a pinhole camera from intrinsics, with zero distortion.
 pub(crate) fn make_camera(fx: f64, fy: f64, cx: f64, cy: f64) -> PinholeCamera {
@@ -61,6 +34,10 @@ pub(crate) fn make_camera(fx: f64, fy: f64, cx: f64, cy: f64) -> PinholeCamera {
 /// * `fx` / `fy` - Focal lengths in pixels.
 /// * `cx` / `cy` - Principal point in pixels.
 /// * `n_frames` - Number of video frames (one camera per frame).
+/// * `progress` - Optional callback fired after each registration, as
+///   `(registered_so_far, total_views)`.
+/// * `config` - Reconstruction tuning; start from
+///   `ReconstructionConfig::new(0.0).sequential()` for video walkthroughs.
 ///
 /// # Returns
 ///
@@ -79,34 +56,10 @@ pub fn run_sfm(
     cy: f64,
     n_frames: usize,
     progress: Option<Arc<dyn Fn(usize, usize) + Send + Sync>>,
-    overrides: ReconstructionOverrides,
+    mut config: ReconstructionConfig,
 ) -> Result<Reconstruction, Box<dyn Error>> {
     let cameras = vec![make_camera(fx, fy, cx, cy); n_frames];
-    // `.sequential()` tunes the config for video walkthroughs (smaller
-    // parallax threshold, more BA iterations).
-    let mut config = ReconstructionConfig::new(0.0).sequential();
     config.progress = progress;
-    if let Some(v) = overrides.max_iterations {
-        config.max_iterations = v;
-    }
-    if let Some(v) = overrides.min_registration_inliers {
-        config.min_registration_inliers = v;
-    }
-    if let Some(v) = overrides.motion_prior_sigma {
-        config.motion_prior_sigma = v;
-    }
-    if let Some(v) = overrides.up_prior_sigma {
-        config.up_prior_sigma = v;
-    }
-    if let Some(v) = overrides.max_reprojection_error {
-        config.max_reprojection_error = v;
-    }
-    if let Some(s) = overrides.sprt {
-        config.sprt = Some(s);
-    }
-    if let Some(v) = overrides.refine_intrinsics {
-        config.refine_intrinsics = v;
-    }
     Ok(reconstruct(&cameras, &[], tracks, &config, None)?)
 }
 
@@ -144,7 +97,7 @@ mod tests {
             test_util::CY,
             test_util::N_FRAMES,
             None,
-            ReconstructionOverrides::default(),
+            ReconstructionConfig::new(0.0).sequential(),
         )
         .expect("synthetic scene must reconstruct");
 
@@ -193,7 +146,7 @@ mod tests {
             test_util::CY,
             test_util::N_FRAMES,
             None,
-            ReconstructionOverrides::default(),
+            ReconstructionConfig::new(0.0).sequential(),
         )
         .expect("synthetic scene must reconstruct");
         assert_eq!(recon.scale, ScaleSource::UpToScale);
