@@ -68,6 +68,10 @@ pub struct FrameFeatures {
 
 impl FrameFeatures {
     /// Number of keypoints detected in the frame.
+    ///
+    /// # Returns
+    ///
+    /// The keypoint count, equal to the descriptor row count.
     pub(crate) fn n_keypoints(&self) -> usize {
         self.keypoints.len()
     }
@@ -78,6 +82,14 @@ impl FrameFeatures {
 /// `Send + Sync` so extractors can be shared across rayon worker threads.
 pub trait FeatureExtractor: Send + Sync {
     /// Extract features from a grayscale image.
+    ///
+    /// # Arguments
+    ///
+    /// * `gray` - Single-channel frame at full resolution.
+    ///
+    /// # Returns
+    ///
+    /// Keypoints and the descriptor block of whichever detector ran.
     ///
     /// # Errors
     ///
@@ -196,6 +208,14 @@ pub struct SiftCudaExtractor {
 impl SiftCudaExtractor {
     /// Create the extractor and a CUDA context on device 0.
     ///
+    /// # Arguments
+    ///
+    /// * `n_features` - Maximum keypoints per frame (`0` = unlimited).
+    ///
+    /// # Returns
+    ///
+    /// An extractor with an empty plan cache, built lazily per image size.
+    ///
     /// # Errors
     ///
     /// Returns an error if no CUDA device is available or the context cannot
@@ -274,6 +294,14 @@ pub struct CudaSiftMatcher {
 impl CudaSiftMatcher {
     /// Build a matcher sized for up to `cap` descriptors per side, on device 0.
     ///
+    /// # Arguments
+    ///
+    /// * `cap` - Maximum descriptors per side (at least 1).
+    ///
+    /// # Returns
+    ///
+    /// A reusable device matcher.
+    ///
     /// # Errors
     ///
     /// Returns an error if no CUDA device is available or allocation fails.
@@ -290,6 +318,16 @@ impl CudaSiftMatcher {
     /// Match two device-resident descriptor blocks, returning `(query, train)`
     /// index pairs (mutual NN + Lowe's ratio, the same contract as the CPU
     /// path).
+    ///
+    /// # Arguments
+    ///
+    /// * `d1` / `n1` - Query descriptors and their logical count.
+    /// * `d2` / `n2` - Train descriptors and their logical count.
+    /// * `ratio` - Lowe's ratio-test threshold.
+    ///
+    /// # Returns
+    ///
+    /// `(query, train)` index pairs from a mutual-NN pass.
     ///
     /// # Errors
     ///
